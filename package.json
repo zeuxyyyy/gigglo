@@ -1,0 +1,23 @@
+{
+  "name": "gigglo",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "firebase": "^10.14.1",
+    "framer-motion": "^10.18.0",
+    "preact": "^10.27.0",
+    "preact-router": "^4.1.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.19"
+  }
+}

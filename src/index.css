@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Poppins', sans-serif;
+  background: #0a0a0a;
+  overflow-x: hidden;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.glassmorphism {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+  z-index: 10;
+}
+
+.neon-glow {
+  box-shadow: 0 0 20px rgba(255, 0, 128, 0.5);
+}
+
+.neon-text {
+  text-shadow: 0 0 10px currentColor;
+}
+
+.btn-primary {
+  @apply bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 rounded-lg font-semibold transition-all duration-300 hover:scale-105 neon-glow relative z-10;
+}
+
+.btn-secondary {
+  @apply bg-dark-card border border-neon-blue px-6 py-3 rounded-lg font-semibold transition-all duration-300 hover:bg-neon-blue hover:text-black relative z-10;
+}
+
+.input-field {
+  @apply bg-dark-card border border-gray-600 rounded-lg px-4 py-3 text-white placeholder-gray-400 focus:border-neon-blue focus:outline-none transition-colors relative z-10;
+}
+
+/* Ensure content is above particles */
+nav, main, .glassmorphism {
+  position: relative;
+  z-index: 10;
+}
+
+/* Bottom navigation safe area */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .bottom-nav {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  }
+}
+
+/* Hide scrollbar but keep functionality */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
