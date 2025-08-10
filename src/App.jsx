@@ -1,5 +1,6 @@
 import { Router } from 'preact-router'
 import { useState, useEffect } from 'preact/hooks'
+import { Analytics } from '@vercel/analytics/react'
 import { auth, db } from './firebase/config'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
@@ -27,7 +28,6 @@ export function App() {
       setUser(user)
       
       if (user) {
-        // Fetch user data from Firestore
         try {
           const userDoc = await getDoc(doc(db, 'users', user.uid))
           if (userDoc.exists()) {
@@ -59,10 +59,8 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-dark-bg text-white relative">
-      {/* Particle background for all pages */}
       <ParticleBackground />
       
-      {/* Main content - No top navbar */}
       <main className="relative z-10 pb-20">
         <Router>
           <Home path="/" user={user} userData={userData} />
@@ -75,8 +73,10 @@ export function App() {
         </Router>
       </main>
 
-      {/* Bottom Navigation - Only for verified users */}
       <BottomNavbar user={user} userData={userData} />
+
+      {/* Vercel Analytics */}
+      <Analytics />
     </div>
   )
 }
