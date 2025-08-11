@@ -12,12 +12,28 @@ export default function ChatRoom({ user, userData }) {
   const [timeLeft, setTimeLeft] = useState(300) // 5 minutes
   const [error, setError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('disconnected')
+  const [notification, setNotification] = useState('')
+  const [showEndConfirm, setShowEndConfirm] = useState(false)
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false)
 
   // Refs for cleanup
   const messagesEndRef = useRef()
   const timerRef = useRef()
   const listenersRef = useRef(new Set())
   const searchTimeoutRef = useRef()
+  const notificationTimeoutRef = useRef()
+  const partnerMonitorRef = useRef()
+
+  // Show notification helper
+  const showNotification = useCallback((message, duration = 3000) => {
+    setNotification(message)
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current)
+    }
+    notificationTimeoutRef.current = setTimeout(() => {
+      setNotification('')
+    }, duration)
+  }, [])
 
   // Cleanup function
   const cleanup = useCallback(async () => {
@@ -31,6 +47,18 @@ export default function ChatRoom({ user, userData }) {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current)
       searchTimeoutRef.current = null
+    }
+
+    // Clear notification timeout
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current)
+      notificationTimeoutRef.current = null
+    }
+
+    // Clear partner monitor
+    if (partnerMonitorRef.current) {
+      clearTimeout(partnerMonitorRef.current)
+      partnerMonitorRef.current = null
     }
 
     // Remove all listeners
@@ -72,6 +100,61 @@ export default function ChatRoom({ user, userData }) {
     }
   }, [messages])
 
+  // Monitor partner connection and handle disconnections/skips
+  useEffect(() => {
+    if (chatState === 'matched' && partner?.uid && roomId) {
+      console.log('👀 Starting partner monitoring for:', partner.uid)
+      
+      const partnerMatchRef = ref(rtdb, `matches/${partner.uid}`)
+      const unsubscribe = onValue(partnerMatchRef, (snapshot) => {
+        if (!snapshot.exists()) {
+          console.log('👻 Partner has left the chat')
+          
+          // Check if there's a system message indicating skip vs end
+          const lastMessage = messages[messages.length - 1]
+          const isSkip = lastMessage?.isSystem && lastMessage?.text?.includes('looking for someone new')
+          
+          if (isSkip) {
+            // Partner skipped - auto start new search
+            showNotification('🔄 Your partner is looking for someone new. Finding you a new chatmate...', 4000)
+            
+            // Clean up current match and start new search
+            partnerMonitorRef.current = setTimeout(async () => {
+              await remove(ref(rtdb, `matches/${user.uid}`)).catch(() => {})
+              
+              // Reset state and start new search
+              setPartner(null)
+              setRoomId(null)
+              setMessages([])
+              setTimeLeft(300)
+              
+              // Start searching for new partner
+              setTimeout(() => {
+                startMatching()
+              }, 1000)
+            }, 2000)
+          } else {
+            // Partner ended chat normally
+            showNotification('👋 Your chat partner has left the conversation', 4000)
+            
+            partnerMonitorRef.current = setTimeout(() => {
+              endChat(false) // Don't send notification since partner already left
+            }, 3000)
+          }
+        }
+      })
+      
+      listenersRef.current.add(unsubscribe)
+      
+      // Cleanup function for this effect
+      return () => {
+        if (unsubscribe) {
+          unsubscribe()
+        }
+      }
+    }
+  }, [chatState, partner?.uid, roomId, messages])
+
   // Start matching process
   const startMatching = useCallback(async () => {
     if (!userData?.isVerified) {
@@ -79,11 +162,12 @@ export default function ChatRoom({ user, userData }) {
       return
     }
 
-    if (chatState !== 'idle') return
+    if (chatState === 'searching') return // Prevent double search
 
     setChatState('searching')
     setError('')
     setConnectionStatus('searching')
+    showNotification('🔍 Searching for someone to chat with...')
 
     try {
       console.log('🔍 Starting match search for:', user.uid)
@@ -142,6 +226,7 @@ export default function ChatRoom({ user, userData }) {
         setRoomId(matchData.roomId)
         setChatState('matched')
         setConnectionStatus('connected')
+        showNotification('🎉 Match found! Say hello to your anonymous chatmate!')
         
         // Remove from queue
         await remove(ref(rtdb, `queue/${user.uid}`))
@@ -157,6 +242,7 @@ export default function ChatRoom({ user, userData }) {
     searchTimeoutRef.current = setTimeout(() => {
       if (chatState === 'searching') {
         setError('No users found. Please try again later.')
+        showNotification('❌ No one available right now. Try again in a few minutes.')
         cancelSearch()
       }
     }, 30000)
@@ -203,6 +289,7 @@ export default function ChatRoom({ user, userData }) {
     setRoomId(roomId)
     setChatState('matched')
     setConnectionStatus('connected')
+    showNotification('🎉 Connected! Start chatting now!')
     
     startChat(roomId)
 
@@ -216,7 +303,8 @@ export default function ChatRoom({ user, userData }) {
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
-          endChat()
+          showNotification('⏰ Time\'s up! Chat has ended.')
+          endChat(true)
           return 0
         }
         return prev - 1
@@ -277,6 +365,24 @@ export default function ChatRoom({ user, userData }) {
     }
   }, [roomId, user?.uid, chatState])
 
+  // Send system notification to partner
+  const sendSystemNotification = useCallback(async (message, isSkipAction = false) => {
+    if (!roomId) return
+    
+    try {
+      const messagesRef = ref(rtdb, `chats/${roomId}/messages`)
+      await push(messagesRef, {
+        text: message,
+        sender: 'system',
+        timestamp: Date.now(),
+        isSystem: true,
+        isSkipAction // Flag to identify skip vs end
+      })
+    } catch (error) {
+      console.error('❌ Error sending system notification:', error)
+    }
+  }, [roomId])
+
   // Cancel search
   const cancelSearch = useCallback(async () => {
     console.log('❌ Cancelling search...')
@@ -284,16 +390,21 @@ export default function ChatRoom({ user, userData }) {
     setChatState('idle')
     setConnectionStatus('disconnected')
     setError('')
+    showNotification('Search cancelled')
   }, [cleanup])
 
-  // End chat
-  const endChat = useCallback(async () => {
+  // End chat - Updated with notification parameter
+  const endChat = useCallback(async (sendNotificationToPartner = true) => {
     console.log('🔚 Ending chat...')
+    
+    // Send notification to partner before ending
+    if (sendNotificationToPartner && roomId) {
+      await sendSystemNotification('Your chat partner has ended the conversation', false)
+    }
     
     // Clean up chat data
     if (roomId) {
       try {
-        // Don't delete messages immediately, let them expire naturally
         await remove(ref(rtdb, `matches/${user.uid}`))
       } catch (e) {
         console.warn('Error cleaning up match data:', e)
@@ -310,20 +421,47 @@ export default function ChatRoom({ user, userData }) {
     setTimeLeft(300)
     setConnectionStatus('disconnected')
     setError('')
-  }, [roomId, user?.uid, cleanup])
+    setShowEndConfirm(false)
+    
+    if (sendNotificationToPartner) {
+      showNotification('Chat ended. Thanks for using Gigglo!')
+    }
+  }, [roomId, user?.uid, cleanup, sendSystemNotification])
 
-  // Skip to next chat
+  // Skip to next chat - Updated with proper logic and auto-search trigger
   const skipChat = useCallback(async () => {
-    await endChat()
-    // Small delay before starting new search
+    console.log('⏭️ Skipping to next chat...')
+    
+    // Send notification to partner with skip flag
+    await sendSystemNotification('Your chat partner is looking for someone new', true)
+    showNotification('🔄 Looking for someone new...')
+    
+    // Clean up current chat
+    if (roomId) {
+      try {
+        await remove(ref(rtdb, `matches/${user.uid}`))
+      } catch (e) {
+        console.warn('Error cleaning up match data:', e)
+      }
+    }
+
+    // Reset chat state but keep some data for smooth transition
+    setPartner(null)
+    setRoomId(null)
+    setMessages([])
+    setTimeLeft(300)
+    setShowSkipConfirm(false)
+    
+    // Start new search after a brief delay
     setTimeout(() => {
       startMatching()
     }, 1000)
-  }, [endChat, startMatching])
+  }, [roomId, user?.uid, sendSystemNotification, startMatching])
 
   // Extend chat time
   const extendChat = useCallback(() => {
     setTimeLeft(prev => prev + 300) // Add 5 minutes
+    showNotification('⏰ Chat extended by 5 minutes!')
     console.log('⏰ Chat extended by 5 minutes')
   }, [])
 
@@ -365,6 +503,63 @@ export default function ChatRoom({ user, userData }) {
     <div className="min-h-screen py-6 px-4">
       <div className="max-w-2xl mx-auto">
         
+        {/* Notification Display */}
+        {notification && (
+          <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-dark-card border border-neon-blue rounded-xl p-4 text-center shadow-2xl animate-pulse">
+            <p className="text-neon-blue font-medium">{notification}</p>
+          </div>
+        )}
+
+        {/* End Chat Confirmation Modal */}
+        {showEndConfirm && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="glassmorphism rounded-2xl p-6 max-w-sm w-full text-center">
+              <div className="text-4xl mb-4">🚪</div>
+              <h3 className="text-xl font-bold mb-2">End Chat?</h3>
+              <p className="text-gray-400 mb-6">This will permanently end your current conversation and return you to the home screen.</p>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setShowEndConfirm(false)}
+                  className="btn-secondary flex-1 py-2"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => endChat(true)}
+                  className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex-1"
+                >
+                  End Chat
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Skip Chat Confirmation Modal */}
+        {showSkipConfirm && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="glassmorphism rounded-2xl p-6 max-w-sm w-full text-center">
+              <div className="text-4xl mb-4">⏭️</div>
+              <h3 className="text-xl font-bold mb-2">Skip to Next?</h3>
+              <p className="text-gray-400 mb-6">This will end the current chat and immediately find you someone new to talk to.</p>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setShowSkipConfirm(false)}
+                  className="btn-secondary flex-1 py-2"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={skipChat}
+                  className="bg-neon-violet hover:bg-purple-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors flex-1"
+                >
+                  Skip & Find New
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Error Display */}
         {error && (
           <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 flex items-center">
@@ -433,12 +628,12 @@ export default function ChatRoom({ user, userData }) {
         {/* Matched State - Active Chat */}
         {chatState === 'matched' && (
           <div className="glassmorphism rounded-2xl overflow-hidden">
-            {/* Chat Header */}
+            {/* Chat Header with End Chat Button */}
             <div className="bg-gradient-to-r from-dark-card to-gray-800 p-4 border-b border-gray-700">
               <div className="flex justify-between items-center">
                 <div className="flex items-center space-x-3">
                   <div className="relative">
-                                    <div className="w-12 h-12 bg-gradient-to-r from-neon-pink to-neon-violet rounded-full flex items-center justify-center text-xl">
+                    <div className="w-12 h-12 bg-gradient-to-r from-neon-pink to-neon-violet rounded-full flex items-center justify-center text-xl">
                       👤
                     </div>
                     <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-dark-card"></div>
@@ -470,12 +665,13 @@ export default function ChatRoom({ user, userData }) {
                         +5min
                       </button>
                     )}
+                    {/* End Chat Button - Top Position */}
                     <button 
-                      onClick={skipChat}
-                      className="btn-secondary text-sm px-3 py-1"
-                      title="End this chat and find someone new"
+                      onClick={() => setShowEndConfirm(true)}
+                      className="bg-red-500/20 hover:bg-red-500/30 px-3 py-1 rounded text-sm font-medium text-red-400 transition-colors border border-red-500/30"
+                      title="End this chat session"
                     >
-                      Skip
+                      🚪 End Chat
                     </button>
                   </div>
                 </div>
@@ -495,11 +691,16 @@ export default function ChatRoom({ user, userData }) {
                   {messages.map((message) => (
                     <div
                       key={message.id}
-                      className={`flex ${message.sender === user.uid ? 'justify-end' : 'justify-start'}`}
+                      className={`flex ${
+                        message.sender === 'system' ? 'justify-center' :
+                        message.sender === user.uid ? 'justify-end' : 'justify-start'
+                      }`}
                     >
                       <div
                         className={`max-w-xs px-4 py-2 rounded-2xl shadow-lg ${
-                          message.sender === user.uid
+                          message.sender === 'system' 
+                            ? 'bg-yellow-500/20 text-yellow-300 text-sm italic border border-yellow-500/30'
+                            : message.sender === user.uid
                             ? 'bg-gradient-to-r from-neon-pink to-neon-violet text-white'
                             : 'bg-dark-card text-gray-200 border border-gray-600'
                         } ${message.isReaction ? 'text-3xl px-3 py-1' : ''}`}
@@ -536,7 +737,7 @@ export default function ChatRoom({ user, userData }) {
               placeholder="Type your message..."
             />
 
-            {/* Chat Footer Actions */}
+            {/* Chat Footer Actions with Skip Button */}
             <div className="bg-gradient-to-r from-gray-800 to-dark-card p-4 border-t border-gray-700">
               <div className="flex justify-between items-center">
                 <div className="flex space-x-3">
@@ -560,14 +761,15 @@ export default function ChatRoom({ user, userData }) {
                 
                 <div className="flex items-center space-x-3">
                   <div className="text-xs text-gray-400">
-                    💬 Chat expires in 24hrs
+                    💬 Auto-expires in 24hrs
                   </div>
+                  {/* Skip Button - Bottom Position */}
                   <button 
-                    onClick={endChat}
-                    className="bg-red-500/20 hover:bg-red-500/30 px-4 py-2 rounded-lg text-red-400 font-medium transition-colors"
-                    title="End this chat session"
+                    onClick={() => setShowSkipConfirm(true)}
+                    className="bg-neon-violet/20 hover:bg-neon-violet/30 px-4 py-2 rounded-lg text-neon-violet font-medium transition-colors border border-neon-violet/30"
+                    title="Skip to next person"
                   >
-                    End Chat
+                    ⏭️ Skip
                   </button>
                 </div>
               </div>
@@ -582,7 +784,7 @@ export default function ChatRoom({ user, userData }) {
             connectionStatus === 'searching' ? 'bg-yellow-500/20 text-yellow-400' :
             'bg-gray-500/20 text-gray-400'
           }`}>
-            <div className={`w-2 h-2 rounded-full ${
+                        <div className={`w-2 h-2 rounded-full ${
               connectionStatus === 'connected' ? 'bg-green-400' :
               connectionStatus === 'searching' ? 'bg-yellow-400 animate-pulse' :
               'bg-gray-400'
@@ -594,9 +796,6 @@ export default function ChatRoom({ user, userData }) {
             </span>
           </div>
         </div>
-
-        
-        
       </div>
     </div>
   )
